@@ -1,0 +1,5 @@
+.idea/
+.vs/
+*.pdb
+x64/
+*.sln
