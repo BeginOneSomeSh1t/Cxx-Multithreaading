@@ -3,3 +3,4 @@
 *.pdb
 x64/
 *.sln
+*.vcxproj
