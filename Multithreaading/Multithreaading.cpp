@@ -9,13 +9,13 @@
 
 constexpr size_t DATASET_SIZE = 5'000'000;
 
-void ProcessData(std::array<int, DATASET_SIZE>& arr)
+void ProcessData(std::array<int, DATASET_SIZE>& arr, int& sum)
 {
     for(int x : arr)
     {
         constexpr auto limit = static_cast<double>(std::numeric_limits<int>::max());
         const auto y = static_cast<double>(x) / limit;
-        arr[0] += static_cast<int>(std::sin(std::cos(y)) * limit);
+        sum += static_cast<int>(std::sin(std::cos(y)) * limit);
     } 
 }
 
@@ -36,11 +36,14 @@ int main()
         std::ranges::generate(arr, rne);
         
     }
+
+    int sum = 0;
+    
     
     // Requires a good bit of a cpu power
     for(auto& arr : datasets)
     {
-        threads.push_back(std::thread{ProcessData, std::ref(arr)}); // wrapp paramter to transfer the arr across threading dimensions)))
+        threads.push_back(std::thread{ProcessData, std::ref(arr), std::ref(sum)}); // wrapp paramter to transfer the arr across threading dimensions)))
     }
     // Make sure all the slaves have done their work
     for(auto& s : threads)
@@ -48,6 +51,7 @@ int main()
         s.join();
     }
     const float t = timer.Peek();
-    std::cout << "Processing the datasets took " << t << " seconds" << std::endl;
+    std::cout << "Result is " << sum << std::endl;
+    std::cout << "Time taken: " << t << std::endl;
     return 0;
 }
