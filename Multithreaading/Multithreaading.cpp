@@ -15,13 +15,13 @@ void ProcessData(std::array<int, DATASET_SIZE>& arr, int& sum, std::mutex& mtx)
     for(int x : arr)
     {
         // lock the mutex, not to allow other guys to modify the value
-        mtx.lock();
+        std::lock_guard g{mtx};
         
         constexpr auto limit = static_cast<double>(std::numeric_limits<int>::max());
         const auto y = static_cast<double>(x) / limit;
         sum += static_cast<int>(std::sin(std::cos(y)) * limit);
         
-        mtx.unlock();
+       
     } 
 }
 
