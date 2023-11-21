@@ -10,13 +10,11 @@
 
 constexpr size_t DATASET_SIZE = 5'000'000;
 
-void ProcessData(std::array<int, DATASET_SIZE>& arr, int& sum, std::mutex& mtx)
+void ProcessData(std::array<int, DATASET_SIZE>& arr, int& sum)
 {
     for(int x : arr)
     {
         // lock the mutex, not to allow other guys to modify the value
-        std::lock_guard g{mtx};
-        
         constexpr auto limit = static_cast<double>(std::numeric_limits<int>::max());
         const auto y = static_cast<double>(x) / limit;
         sum += static_cast<int>(std::sin(std::cos(y)) * limit);
@@ -42,23 +40,28 @@ int main()
         std::ranges::generate(arr, rne);
         
     }
-    
-    std::mutex mtx;
-    int sum = 0;
+    struct Value
+    {
+        int v = 0;
+        char padding[60];
+    };
+    Value sum[] = {0,0,0,0};
     
     
     // Requires a good bit of a cpu power
-    for(auto& arr : datasets)
+    for(size_t i = 0; i < 4; i++)
     {
-        threads.push_back(std::thread{ProcessData, std::ref(arr), std::ref(sum), std::ref(mtx)}); // wrapp paramter to transfer the arr across threading dimensions)))
+        threads.emplace_back(std::thread{ProcessData, std::ref(datasets[i]), std::ref(sum[i].v)}); // wrapp paramter to transfer the arr across threading dimensions)))
     }
+
+    
     // Make sure all the slaves have done their work
     for(auto& s : threads)
     {
         s.join();
     }
     const float t = timer.Peek();
-    std::cout << "Result is " << sum << std::endl;
+    std::cout << "Result is " << sum[0].v + sum[1].v + sum[2].v + sum[3].v << std::endl;
     std::cout << "Time taken: " << t << std::endl;
     return 0;
 }
