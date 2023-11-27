@@ -8,9 +8,38 @@
 #include <thread>
 #include <span>
 
-constexpr size_t DATASET_SIZE = 50'000'000;
+// experimental settings
+constexpr size_t WORKER_COUNT = 4;
+constexpr size_t CHUNK_SIZE = 100;
+constexpr size_t CHUNK_COUNT = 100;
+constexpr size_t LIGHT_ITERATIONS = 100;
+constexpr size_t HEAVY_ITERATIONS = 1'000;
+constexpr double PROBABILITY_HEAVY = .02;
 
-void ProcessData(std::span<int> arr, int& sum)
+
+// ensnure the chunk size is a multiple of 4
+static_assert(CHUNK_SIZE >= WORKER_COUNT, "CHUNK_SIZE must be greater than or equal to WORKER_COUNT");
+static_assert(CHUNK_SIZE % WORKER_COUNT == 0);
+
+struct task
+{
+    double val;
+    bool heavy;
+
+    [[nodiscard]] double process() const
+    {
+        const auto iterations = heavy ? HEAVY_ITERATIONS : LIGHT_ITERATIONS;
+        double result = val;
+        for(size_t i = 0; i < iterations; i++)
+        {
+            result += std::sin(std::cos(val));
+        }
+        return result;
+    }
+    
+};
+
+void process_data(std::span<int> arr, int& sum)
 {
     for(auto x : arr)
     {
@@ -19,30 +48,31 @@ void ProcessData(std::span<int> arr, int& sum)
         const auto y = static_cast<double>(x) / limit;
         sum += static_cast<int>(std::sin(std::cos(y)) * limit);
         
-       
     } 
 }
 
-std::vector<std::array<int, DATASET_SIZE>> GenerateDataSets()
+std::vector<std::array<task, CHUNK_SIZE>> generate_data_sets()
 {
     std::minstd_rand rne;
-    std::vector<std::array<int, DATASET_SIZE>> datasets{4};
+    std::uniform_real_distribution dist{-1., 1.};
+    std::bernoulli_distribution bernouili_dist{ PROBABILITY_HEAVY };
+    std::vector<std::array<task, CHUNK_SIZE>> chunks(CHUNK_COUNT);
 
     // fill in the data set
-    for(auto& arr : datasets)
+    for(auto& chunk : chunks)
     {
         // Fills each array with random numbers
-        std::ranges::generate(arr, rne);
+        std::ranges::generate(chunk, [&]{return task{ .val = dist(rne), .heavy = bernouili_dist(rne) };});
         
     }
 
-    return datasets;
+    return chunks;
 }
 
-int DoOneBiggie()
+int do_one_biggie()
 {
     // Define random engine and data set
-    auto datasets = GenerateDataSets();
+    auto datasets = generate_data_sets();
     std::vector<std::thread> threads;
     
     MyTimer timer;
@@ -60,7 +90,7 @@ int DoOneBiggie()
     // Requires a good bit of a cpu power
     for(size_t i = 0; i < 4; i++)
     {
-        threads.emplace_back(std::thread{ProcessData, std::span{datasets[i]}, std::ref(sum[i].v)}); // wrapp paramter to transfer the arr across threading dimensions)))
+        threads.emplace_back(std::thread{process_data, std::span{datasets[i]}, std::ref(sum[i].v)}); // wrapp paramter to transfer the arr across threading dimensions)))
     }
 
     
@@ -77,30 +107,34 @@ int DoOneBiggie()
 }
 
 // Interface for the main thread
-class MasterControl
+class master_control
 {
 public:
-    MasterControl(int workers_count)
+    master_control()
         :
-    workers_count_{workers_count},
-    lk_{mtx_},
-    done_count_{0}
+        lk_{mtx_},
+        done_count_{0}
     {}
     
-    void SignalDone()
+    void signal_done()
     {
+        bool needs_notification = false;
         {
             std::lock_guard lk{mtx_};
             ++done_count_;
-        }
 
-        if(done_count_ == workers_count_)
+            if(done_count_ == WORKER_COUNT)
+            {
+                needs_notification = true;
+            }
+        }
+        if(needs_notification)
             cv_.notify_one();
     }
     
-    void WaitForAllDone()
+    void wait_for_all_done()
     {
-        cv_.wait(lk_, [this]{return done_count_ == workers_count_;});
+        cv_.wait(lk_, [this]{return done_count_ == WORKER_COUNT;});
 
         done_count_ = 0;
     }
@@ -109,7 +143,6 @@ private:
     std::condition_variable cv_;
     std::mutex mtx_;
     std::unique_lock<std::mutex> lk_;
-    int workers_count_;
     
     // shared memory
     int done_count_;
@@ -117,16 +150,16 @@ private:
 
 
 // Interface for a seaprate thread (joins automatically)
-class Worker
+class worker
 {
 public:
-    Worker(const std::shared_ptr<MasterControl>& sp_mctrl)
+    worker(const std::shared_ptr<master_control>& sp_mctrl)
         :
     sp_mctrl_{sp_mctrl},
-    thread_{&Worker::Run_, this}
+    thread_{&worker::run_, this}
     {}
 
-    void SetJob(std::span<int> dataset, int* p_output)
+    void set_job(std::span<int> dataset, int* p_output)
     {
         {
             std::lock_guard lk{mtx_};
@@ -135,7 +168,7 @@ public:
         }
         cv_.notify_one();
     }
-    void Kill()
+    void kill()
     {
         {
             std::lock_guard lk{mtx_};
@@ -144,7 +177,7 @@ public:
         cv_.notify_one();
     }
 private:
-    void Run_()
+    void run_()
     {
         std::unique_lock lk{mtx_};
         while(true)
@@ -154,15 +187,15 @@ private:
             if(b_dying)
                 break;
 
-            ProcessData(input_, *p_output_);
+            process_data(input_, *p_output_);
 
             p_output_ = nullptr;
             input_ = {};
-            sp_mctrl_->SignalDone();
+            sp_mctrl_->signal_done();
         }
     }
     
-    std::shared_ptr<MasterControl> sp_mctrl_;
+    std::shared_ptr<master_control> sp_mctrl_;
     std::jthread thread_;
     std::condition_variable cv_;
     std::mutex mtx_;
@@ -172,9 +205,9 @@ private:
     bool b_dying = false;
 };
 
-int DoSmallies()
+int do_smallies()
 {
-    auto datasets = GenerateDataSets();
+    auto datasets = generate_data_sets();
   
     struct Value
     {
@@ -187,11 +220,11 @@ int DoSmallies()
     timer.Mark();
 
     constexpr int workers_count{4};
-    auto sp_mctrl {std::make_shared<MasterControl>(workers_count)};
-    std::vector<std::unique_ptr<Worker>> p_workers;
+    auto sp_mctrl {std::make_shared<master_control>(workers_count)};
+    std::vector<std::unique_ptr<worker>> p_workers;
     for(size_t j = 0; j < workers_count; j++)
     {
-        p_workers.push_back(std::make_unique<Worker>(sp_mctrl));
+        p_workers.push_back(std::make_unique<worker>(sp_mctrl));
     }
     
     constexpr auto subset_size = DATASET_SIZE / 10'000;
@@ -199,9 +232,9 @@ int DoSmallies()
     {
         for(size_t j = 0; j < 4; j++)
         {
-            p_workers[j]->SetJob(std::span{&datasets[j][i], subset_size}, &sum[j].v);
+            p_workers[j]->set_job(std::span{&datasets[j][i], subset_size}, &sum[j].v);
         }
-        sp_mctrl->WaitForAllDone();
+        sp_mctrl->wait_for_all_done();
     }
 
     const float t = timer.Peek();
@@ -209,7 +242,7 @@ int DoSmallies()
     std::cout << "Time taken: " << t << std::endl;
 
     for(auto& w : p_workers)
-        w->Kill();
+        w->kill();
     
     getchar();
     return 0;
@@ -221,9 +254,9 @@ int main(int argc, char** argv)
     try
     {
         if(argc > 1 && std::string{argv[1]} == "smol")
-            return DoSmallies();
+            return do_smallies();
         
-        return DoOneBiggie();
+        return do_one_biggie();
     }
     catch (...)
     {
