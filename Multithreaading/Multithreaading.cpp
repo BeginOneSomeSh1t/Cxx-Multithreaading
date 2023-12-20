@@ -1,3 +1,4 @@
+#include "Public/AtomicQueued.h"
 #include "Public/popl.hpp"
 #include "Public/Preassigned.h"
 #include "Public/Queued.h"
@@ -13,6 +14,7 @@ int main(int argc, char** argv)
     auto stacked = op.add<Switch>("", "stacked", "Generate a stacked Dataset");
     auto even = op.add<Switch>("", "even", "Generate an even Dataset");
     auto queued = op.add<Switch>("", "queued", "Use queued approach");
+    auto atomic = op.add<Switch>("", "atomic-queued", "Used for atomic queued approach");
 
     op.parse(argc, argv);
     
@@ -38,6 +40,11 @@ int main(int argc, char** argv)
     {
         LOG_ALWAYS(LogTemp, Info, "Start queued experiment");
         return que::do_Experiment(std::move(data));
+    }
+    else if(atomic->is_set())
+    {
+        LOG_ALWAYS(LogTemp, Info, "Start atomic-queued experiment");
+        return atq::do_Experiment(std::move(data));
     }
     else
     {
