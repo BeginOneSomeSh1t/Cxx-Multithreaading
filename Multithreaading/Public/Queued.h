@@ -56,11 +56,14 @@ namespace que
 
         const Task* get_Task()
         {
+            std::lock_guard lck{_mtx};
             const auto i = _idx++;
+            
             if(i >= CHUNK_SIZE)
             {
                 return nullptr;
             }
+            
             return &_current_chunk[i];
         }
     private:
@@ -100,6 +103,7 @@ namespace que
                 LOG(LogWorker, Info, "Killing Worker...");
                 _b_dying = true;
             }
+            
             _cv.notify_one();
         }
 
@@ -134,6 +138,7 @@ namespace que
                 _accumulation += p_task->process();
                 _num_heavy_items_processed += p_task->_b_heavy ? 1 : 0;
             }
+            
             LOG(LogWorker, Info, "Processed data: {} for Worker", _accumulation);
         }
 
@@ -224,7 +229,6 @@ namespace que
         const float t = total_timer.Peek();
         
         // Accumlate the overall result.
-        // !! SIDE NOTE - I know there is a thing called std::accumulate but I thought up to this point they included it in ranges but they didn't, so I just said fuck you I am not gonna write this shit.being shit.end again!
         unsigned int final_result = 0;
         LOG_ALWAYS(LogTemp, Info, "Accumulating final result");
         for(const auto& w : p_workers)

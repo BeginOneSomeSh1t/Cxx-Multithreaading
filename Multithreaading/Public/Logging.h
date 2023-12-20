@@ -2,7 +2,7 @@
 #include <string>
 
 // Logging
-//#define DISABLE_LOGGING
+#define DISABLE_LOGGING
 
 #ifndef DISABLE_LOGGING
 #define LOG(Category, Verbosity, Format, ...) std::cout << Category << ": " << Verbosity << ": " << std::format(Format, __VA_ARGS__) << std::endl
