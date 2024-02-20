@@ -235,6 +235,7 @@ namespace que
         {
             final_result += w->get_Result();
         }
+        
         LOG_ALWAYS(LogTemp, Info, "Result is {}\n Time taken: {}", final_result, t);
 
         

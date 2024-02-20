@@ -55,9 +55,9 @@ namespace atq
             _current_chunk = chunk;
         }
 
-        const Task* get_Task()
+        /*__declspec(noinline)*/ const Task* get_Task()
         {
-            const auto i = _idx.fetch_add(1, std::memory_order_relaxed);
+            const auto i = _idx.fetch_add(1, std::memory_order_seq_cst);
             
             if(i >= CHUNK_SIZE)
             {

@@ -3,6 +3,16 @@
 #include "Public/Preassigned.h"
 #include "Public/Queued.h"
 #include "Public/Task.h"
+#include <math.h>
+
+#include <iostream>
+
+template<typename... Args>
+void print_anything(Args&&... args)
+{
+    (std::cout << ... << args) << std::endl;
+}
+
 
 
 int main(int argc, char** argv)
@@ -51,6 +61,5 @@ int main(int argc, char** argv)
         LOG_ALWAYS(LogTemp, Info, "Start random experiment");
         return pre::do_experiment(std::move(data));
     }
-    
     
 }
