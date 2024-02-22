@@ -60,19 +60,43 @@ namespace tk
         }
         
         /**
-         * GetTask function retrieves a task using the provided stop token.
-         *
-         * @param InStopToken reference to the stop token
-         *
-         * @return the retrieved task
-         *
-         * @throws N/A
-         */
+         * Waits for all tasks to be done.
+         */        
+        void WaitForAllDone()
+        {
+            std::unique_lock ULock{TaskQueueMutex};
+            CVarAllDone.wait(ULock, [this]{return Tasks.empty();});
+        }
+
+        // Override destructor because the joined threads
+        // block other threads from running
+        ~ThreadPool()
+        {
+            for(auto& Worker : Workers)
+            {
+                Worker.RequestStop();
+            }
+        }
+        
+    private:
+        // functions
+        /**
+        * GetTask function retrieves a task using the provided stop token.
+        *
+        * @param InStopToken reference to the stop token
+        *
+        * @return the retrieved task
+        *
+        * @throws N/A
+        */
         Task<void()> GetTask(std::stop_token& InStopToken)
         {
             Task<void()> Task;
-            std::unique_lock Lock{TaskQueueMutex};
-            if(CVarQueueTask.wait(Lock, InStopToken, [this]{return !Tasks.empty();}))
+            std::unique_lock ULock{TaskQueueMutex};
+            CVarQueueTask.wait(ULock, InStopToken, [this]{return !Tasks.empty();});
+
+            // If stop token is not requested, get the task
+            if(!InStopToken.stop_requested())
             {
                 Task = std::move(Tasks.front());
                 Tasks.pop_front();
@@ -84,18 +108,9 @@ namespace tk
                 }
             }
             return Task;
-        }
-
-        /**
-         * Waits for all tasks to be done.
-         */        
-        void WaitForAllDone()
-        {
-            std::unique_lock ULock{TaskQueueMutex};
-            CVarAllDone.wait(ULock, [this]{return Tasks.empty();});
+            
         }
         
-    private:
         // data
         class Worker
         {
@@ -107,6 +122,11 @@ namespace tk
              * @param InPoolPtr pointer to the ThreadPool
              */
             Worker(ThreadPool* InPoolPtr) : pPool(InPoolPtr), Thread(std::bind_front(&Worker::RunKernel, this)){}
+
+            void RequestStop()
+            {
+                Thread.request_stop();
+            }
             
         private:
             // functions
@@ -141,21 +161,17 @@ int main(int argc, char** argv)
 
     const auto Spit = []
     {
-        std::this_thread::sleep_for(500ms);
+        std::this_thread::sleep_for(100ms);
         std::ostringstream Ss;
         Ss << std::this_thread::get_id();
-        std::cout << std::format("<< {} >>", Ss.str());
+        std::cout << std::format("<< {} >>\n", Ss.str()) << std::flush;
     };
     
    tk::ThreadPool Pool{4};
-    Pool.Run(Spit);
-    Pool.Run(Spit);
-    Pool.Run(Spit);
-    Pool.Run(Spit);
-    Pool.Run(Spit);
-    Pool.Run(Spit);
-    Pool.Run(Spit);
-    Pool.Run(Spit);
     
+    for(int i = 0; i < 160; ++i)
+        Pool.Run(Spit);
+
+    Pool.WaitForAllDone();
     return 0;    
 }
