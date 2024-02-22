@@ -1,10 +1,9 @@
 #include <condition_variable>
-
+#include <deque>
 #include "Public/AtomicQueued.h"
 #include "Public/popl.hpp"
 #include "Public/Preassigned.h"
-#include "Public/Queued.h"
-#include "Public/Task.h"
+#include <sstream>
 #include <functional>
 #include <iostream>
 
@@ -23,82 +22,113 @@ namespace tk
     class ThreadPool
     {
     public:
+        
+        /**
+         * Constructor for ThreadPool class.
+         *
+         * @param InWorkersCount the number of workers in the thread pool
+         *
+         * @return 
+         *
+         * @throws 
+         */
+        ThreadPool(std::size_t InWorkersCount)
+        {
+            Workers.reserve(InWorkersCount);
+            for(size_t i = 0; i < InWorkersCount; i++)
+            {
+                Workers.emplace_back(this);
+            }
+        }
+        
+        /**
+         * Run the given task by pushing it to the task queue and notifying the task queue thread.
+         *
+         * @param InTask the task to be run
+         *
+         * @return void
+         *
+         * @throws None
+         */        
         void Run(Task<void()> InTask)
         {
-            // Find one worker that isn't busy
-            if(auto It = std::ranges::find_if(pWorkers, [](const auto& pWorker) -> bool {return !pWorker->IsBusy();});
-                It != pWorkers.end())
             {
-                (*It)->Run(std::move(InTask));
+                std::lock_guard Lock{TaskQueueMutex};
+                Tasks.push_back(std::move(InTask));
             }
-            // Otherwise, add a new worker and run the task
-            else
-            {
-                pWorkers.push_back
-                (
-                    std::make_unique<Worker>()
-                );
-                
-                pWorkers.back()->Run(std::move(InTask));
-            }
+            CVarQueueTask.notify_one();
         }
-        bool IsRunningTasks()
+        
+        /**
+         * GetTask function retrieves a task using the provided stop token.
+         *
+         * @param InStopToken reference to the stop token
+         *
+         * @return the retrieved task
+         *
+         * @throws N/A
+         */
+        Task<void()> GetTask(std::stop_token& InStopToken)
         {
-            return std::ranges::any_of(pWorkers, [](const auto& pW){return pW->IsBusy();});
+            Task<void()> Task;
+            std::unique_lock Lock{TaskQueueMutex};
+            if(CVarQueueTask.wait(Lock, InStopToken, [this]{return !Tasks.empty();}))
+            {
+                Task = std::move(Tasks.front());
+                Tasks.pop_front();
+
+                // Notify all when all the tasks are done
+                if(Tasks.empty())
+                {
+                    CVarAllDone.notify_all();
+                }
+            }
+            return Task;
         }
+
+        /**
+         * Waits for all tasks to be done.
+         */        
+        void WaitForAllDone()
+        {
+            std::unique_lock ULock{TaskQueueMutex};
+            CVarAllDone.wait(ULock, [this]{return Tasks.empty();});
+        }
+        
     private:
         // data
         class Worker
         {
         public:
-
-            Worker() : Thread(&Worker::RunKernel, this){}
             
-            bool IsBusy() const
-            {
-                return bBusy;
-            }
-            void Run(Task<void()> InTask)
-            {
-                Task = std::move(InTask);
-                bBusy = true;
-                CVar.notify_one();
-            }
+            /**
+             * Constructor for the Worker class.
+             *
+             * @param InPoolPtr pointer to the ThreadPool
+             */
+            Worker(ThreadPool* InPoolPtr) : pPool(InPoolPtr), Thread(std::bind_front(&Worker::RunKernel, this)){}
+            
         private:
             // functions
-            void RunKernel()
+            void RunKernel(std::stop_token InStopToken)
             {
-                std::unique_lock Lk{Mtx};
-
-                auto InStopToken = Thread.get_stop_token();
-                while(CVar.wait(Lk, InStopToken, [this]() -> bool {return bBusy;}))
+                while(auto Task = pPool->GetTask(InStopToken))
                 {
                     // Execute the task
                     Task();
-
-                    // Empty the task
-                    Task = {};
-
-                    bBusy = false;
                 }
             }
-
-            // data
-            std::atomic<bool> bBusy = false;
-            std::condition_variable_any CVar;
-
-            // Using mutex only for the condition variable
-            std::mutex Mtx;
-            Task<void()> Task;
-
-            /*Should be below any parameters
-             * because to avoid destruction of
-             * those when the thread finishes
-             */
+            
+            //data
+            ThreadPool* pPool;
             std::jthread Thread;
         };
-        
-        std::vector<std::unique_ptr<Worker>> pWorkers;
+
+        std::mutex TaskQueueMutex;
+        std::condition_variable_any CVarQueueTask;
+        std::condition_variable CVarAllDone;
+        std::deque<Task<void()>> Tasks;
+        std::vector<Worker> Workers;
     };
 
     
@@ -107,15 +137,25 @@ namespace tk
 
 int main(int argc, char** argv)
 {
-   tk::ThreadPool Pool;
-    Pool.Run([]{std::cout << "Hello" << std::endl;});
-    Pool.Run([]{std::cout << "World" << std::endl;});
+    using namespace std::chrono_literals;
 
-    /*while(Pool.IsRunningTasks())
+    const auto Spit = []
     {
-        using namespace std::chrono_literals;
-        std::this_thread::sleep_for(16ms);
-    }*/
+        std::this_thread::sleep_for(500ms);
+        std::ostringstream Ss;
+        Ss << std::this_thread::get_id();
+        std::cout << std::format("<< {} >>", Ss.str());
+    };
+    
+   tk::ThreadPool Pool{4};
+    Pool.Run(Spit);
+    Pool.Run(Spit);
+    Pool.Run(Spit);
+    Pool.Run(Spit);
+    Pool.Run(Spit);
+    Pool.Run(Spit);
+    Pool.Run(Spit);
+    Pool.Run(Spit);
     
     return 0;    
 }
