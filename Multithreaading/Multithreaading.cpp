@@ -1,11 +1,13 @@
+#include <cassert>
 #include <condition_variable>
 #include <deque>
 #include "Public/AtomicQueued.h"
 #include "Public/popl.hpp"
 #include "Public/Preassigned.h"
-#include <sstream>
+#include <optional>
 #include <functional>
 #include <iostream>
+#include <semaphore>
 
 template<typename... Args>
 void print_anything(Args&&... args)
@@ -17,6 +19,78 @@ namespace tk
 {
     template<typename UserPolicy>
     using Task = std::function<UserPolicy>;
+
+
+    template<typename RetValType>
+    class SharedState
+    {
+    public:
+        template<typename UserRetValType>
+        void Set(UserRetValType&& InResult)
+        {
+            if(!Result)
+            {
+                Result = std::forward<UserRetValType>(InResult);
+                ReadySignal.release();
+            }
+        }
+
+        RetValType Get()
+        {
+            ReadySignal.acquire();
+            return std::move(*Result);
+        }
+    private:
+        std::binary_semaphore ReadySignal{0};
+        std::optional<RetValType> Result;
+    };
+
+    // Forward declaration
+    template<typename RetValType>
+    class Promise;
+    
+    template<typename RetValType>
+    class Future
+    {
+        friend class Promise<RetValType>;
+    public:
+        RetValType Get()
+        {
+            assert(!bResultAcquired);
+            bResultAcquired = true;
+            return pState->Get();
+        }
+    private:
+        // functions
+        Future(std::shared_ptr<SharedState<RetValType>> InStatePtr) : pState{InStatePtr} {}
+
+        // data
+        bool bResultAcquired = false;
+        std::shared_ptr<SharedState<RetValType>> pState;
+    };
+    
+    template<typename RetValType>
+    class Promise
+    {
+    public:
+        Promise() : pSharedState(std::make_shared<SharedState<RetValType>>()) {}
+
+        template<typename UserResultType>
+        void Set(UserResultType&& InResult)
+        {
+            pSharedState->Set(std::forward<UserResultType>(InResult));
+        }
+
+        Future<RetValType> GetFuture()
+        {
+            assert(bFutureAvailable);
+            bFutureAvailable = false;
+            return {pSharedState};
+        }
+    private:
+        bool bFutureAvailable = true;
+        std::shared_ptr<SharedState<RetValType>> pSharedState;
+    };
 
     // Thread pool is a single thread for now
     class ThreadPool
@@ -159,7 +233,7 @@ int main(int argc, char** argv)
 {
     using namespace std::chrono_literals;
 
-    const auto Spit = []
+    /*const auto Spit = []
     {
         std::this_thread::sleep_for(100ms);
         std::ostringstream Ss;
@@ -172,6 +246,18 @@ int main(int argc, char** argv)
     for(int i = 0; i < 160; ++i)
         Pool.Run(Spit);
 
-    Pool.WaitForAllDone();
+    Pool.WaitForAllDone();*/
+
+    tk::Promise<int> Prom;
+    auto Future = Prom.GetFuture();
+
+    std::thread{[](tk::Promise<int> InPromise)
+    {
+        std::this_thread::sleep_for(2'500ms);
+        InPromise.Set(67);
+    }, std::move(Prom)}.detach();
+
+    std::cout << "My value: " << Future.Get();
+    
     return 0;    
 }
