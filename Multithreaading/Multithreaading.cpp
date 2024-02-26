@@ -7,6 +7,7 @@
 #include <semaphore>
 #include <sstream>
 #include <ranges>
+#include <variant>
 
 namespace rn = std::ranges;
 namespace vi = std::views;
@@ -17,22 +18,30 @@ template<typename RetValType>
 class shared_state {
 public:
     template<typename UserResType>
-    void set(UserResType&& _Result) {
-        if(!result_) {
-            result_ = std::forward<UserResType>(_Result);
+    void set(UserResType&& result) {
+        // If it holds the monostate, it means the variant is empty
+        if(std::holds_alternative<std::monostate>(result_)) {
+            result_ = std::forward<UserResType>(result);
             ready_signal_.release();
         }
     }
 
     RetValType get() {
         ready_signal_.acquire();
-        return std::move(*result_);
+        
+        //@note: a pointer to a pointer to an exception
+        if(auto pp_exception = std::get_if<std::exception_ptr>(&result_))
+        {
+            // rethrow an exception that we got during function execution
+            std::rethrow_exception(*pp_exception);
+        }
+        
+        return std::move(std::get<RetValType>(result_));
     }
 
 private:
     std::binary_semaphore ready_signal_{0};
-    std::optional<RetValType> result_;
-    std::exception_ptr exception_;
+    std::variant<std::monostate, RetValType, std::exception_ptr> result_;
 };
 
 template<>
@@ -45,14 +54,28 @@ public:
            ready_signal_.release();
         }
     }
+   void set(std::exception_ptr p_exception)
+   {
+       if(!completed_) {
+           completed_ = true;
+           p_exception_ = p_exception;
+           ready_signal_.release();
+       }
+   }
 
     void get() {
         ready_signal_.acquire();
+       
+       if(p_exception_)
+       {
+           std::rethrow_exception(p_exception_);
+       }
     }
 
 private:
     std::binary_semaphore ready_signal_{0};
     bool completed_ = false;
+    std::exception_ptr p_exception_;
 };
 
 template<typename RetValType>
@@ -148,7 +171,7 @@ private:
             }
             catch (...)
             {
-                
+                _promise.set(std::current_exception());
             }
         };
     }
@@ -166,15 +189,15 @@ public:
     }
 
     template<typename FuncType, typename... Params>
-    auto run(FuncType&& _Function, Params&&... _Params)
+    auto run(FuncType&& function, Params&&... params)
     {
-        auto [_Task, _Future] = tk::task::make(std::forward<FuncType>(_Function), std::forward<Params>(_Params)...);
+        auto [task, future] = tk::task::make(std::forward<FuncType>(function), std::forward<Params>(params)...);
         {
             std::lock_guard lock{task_queue_mutex_};
-            tasks_.push_back(std::move(_Task));
+            tasks_.push_back(std::move(task));
         }
         cvar_queue_task_.notify_one();
-        return _Future;
+        return future;
     }
 
     void wait_for_all_done() {
@@ -191,21 +214,21 @@ public:
 private:
     class worker {
     public:
-        worker(thread_pool* in_pool_ptr) : _p_pool(in_pool_ptr), _thread(std::bind_front(&worker::run_kernel, this)){}
+        worker(thread_pool* pool) : p_pool_(pool), thread_(std::bind_front(&worker::run_kernel_, this)){}
 
         void request_stop() {
-            _thread.request_stop();
+            thread_.request_stop();
         }
 
     private:
-        void run_kernel(std::stop_token in_stop_token) {
-            while(auto task = _p_pool->get_task(in_stop_token)) {
+        void run_kernel_(std::stop_token in_stop_token) {
+            while(auto task = p_pool_->get_task(in_stop_token)) {
                 task();
             }
         }
 
-        thread_pool* _p_pool;
-        std::jthread _thread;
+        thread_pool* p_pool_;
+        std::jthread thread_;
     };
 
     task get_task(std::stop_token& in_stop_token) {
@@ -253,8 +276,16 @@ int main(int argc, char* argv[]) {
         vi::transform([&](int i){return pool.run(spitt, i*25);}) |
             rn::to<std::vector>();
 
-    for(auto& future : futures) {
-        std::cout << std::format("<< {} >>\n", future.get());
+    for(auto& future : futures)
+    {
+        try
+        {
+            std::cout << std::format("<< {} >>\n", future.get());
+        }
+        catch (...)
+        {
+            std::cout << "whee!\n";
+        }
     }
 
     return 0;
