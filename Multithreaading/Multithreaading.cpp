@@ -15,7 +15,8 @@ namespace vi = std::views;
 namespace tk {
 
 template<typename RetValType>
-class shared_state {
+class shared_state
+    {
 public:
     template<typename UserResType>
     void set(UserResType&& result) {
@@ -37,6 +38,16 @@ public:
         }
         
         return std::move(std::get<RetValType>(result_));
+    }
+
+    bool ready()
+    {
+        if(ready_signal_.try_acquire())
+        {
+            ready_signal_.release();
+            return true;
+        }
+        return false;
     }
 
 private:
@@ -90,6 +101,11 @@ public:
         assert(!result_acquired_);
         result_acquired_ = true;
         return p_state_->get();
+    }
+
+    bool ready()
+    {
+        return p_state_->ready();
     }
 
 private:
@@ -287,6 +303,15 @@ int main(int argc, char* argv[]) {
             std::cout << "whee!\n";
         }
     }
+
+    auto future = pool.run([]{std::this_thread::sleep_for(2000ms); return 69;});
+    while(!future.ready())
+    {
+        std::this_thread::sleep_for(50ms);
+        std::cout << "Waiting for result...\n";
+    }
+
+    std:: cout << "Result: " << future.get() << "\n";
 
     return 0;
 }
