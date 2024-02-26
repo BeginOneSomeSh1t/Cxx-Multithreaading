@@ -7,135 +7,14 @@
 #include <semaphore>
 #include <sstream>
 #include <ranges>
+#include <future>
 #include <variant>
 
 namespace rn = std::ranges;
 namespace vi = std::views;
 
 namespace tk {
-
-template<typename RetValType>
-class shared_state
-    {
-public:
-    template<typename UserResType>
-    void set(UserResType&& result) {
-        // If it holds the monostate, it means the variant is empty
-        if(std::holds_alternative<std::monostate>(result_)) {
-            result_ = std::forward<UserResType>(result);
-            ready_signal_.release();
-        }
-    }
-
-    RetValType get() {
-        ready_signal_.acquire();
-        
-        //@note: a pointer to a pointer to an exception
-        if(auto pp_exception = std::get_if<std::exception_ptr>(&result_))
-        {
-            // rethrow an exception that we got during function execution
-            std::rethrow_exception(*pp_exception);
-        }
-        
-        return std::move(std::get<RetValType>(result_));
-    }
-
-    bool ready()
-    {
-        if(ready_signal_.try_acquire())
-        {
-            ready_signal_.release();
-            return true;
-        }
-        return false;
-    }
-
-private:
-    std::binary_semaphore ready_signal_{0};
-    std::variant<std::monostate, RetValType, std::exception_ptr> result_;
-};
-
-template<>
-class shared_state<void>
-{
-public:
-   void set() {
-        if(!completed_) {
-            completed_ = true;
-           ready_signal_.release();
-        }
-    }
-   void set(std::exception_ptr p_exception)
-   {
-       if(!completed_) {
-           completed_ = true;
-           p_exception_ = p_exception;
-           ready_signal_.release();
-       }
-   }
-
-    void get() {
-        ready_signal_.acquire();
-       
-       if(p_exception_)
-       {
-           std::rethrow_exception(p_exception_);
-       }
-    }
-
-private:
-    std::binary_semaphore ready_signal_{0};
-    bool completed_ = false;
-    std::exception_ptr p_exception_;
-};
-
-template<typename RetValType>
-class promise;
-
-template<typename RetValType>
-class future {
-    friend class promise<RetValType>;
-
-public:
-    RetValType get() {
-        assert(!result_acquired_);
-        result_acquired_ = true;
-        return p_state_->get();
-    }
-
-    bool ready()
-    {
-        return p_state_->ready();
-    }
-
-private:
-    future(std::shared_ptr<shared_state<RetValType>> in_state_ptr) : p_state_{in_state_ptr} {}
-
-    bool result_acquired_ = false;
-    std::shared_ptr<shared_state<RetValType>> p_state_;
-};
-
-template<typename RetValType>
-class promise {
-public:
-    promise() : p_shared_state_(std::make_shared<shared_state<RetValType>>()) {}
-
-    template<typename... UserResType>
-    void set(UserResType&&... _Result) {
-        p_shared_state_->set(std::forward<UserResType>(_Result)...);
-    }
-
-    future<RetValType> get_future() {
-        assert(_future_available);
-        _future_available = false;
-        return {p_shared_state_};
-    }
-
-private:
-    bool _future_available = true;
-    std::shared_ptr<shared_state<RetValType>> p_shared_state_;
-};
-
+    
 class task {
 public:
     task() = default;
@@ -158,7 +37,7 @@ public:
 
     template<typename FuncType, typename... Params>
     static auto make(FuncType&& in_executor, Params&&... in_Params) {
-        promise<std::invoke_result_t<FuncType, Params...>> promise;
+        std::promise<std::invoke_result_t<FuncType, Params...>> promise;
         auto future = promise.get_future();
         return std::make_pair(
             task{std::forward<FuncType>(in_executor), std::move(promise), std::forward<Params>(in_Params)...},
@@ -178,21 +57,21 @@ private:
                 if constexpr(std::is_void_v<std::invoke_result_t<FuncType, Params...>>)
                 {
                     _function(std::forward<Params>(_params)...);
-                    _promise.set();
+                    _promise.set_value();
                 }
                 else
                 {
-                    _promise.set(_function(std::forward<Params>(_params)...));
+                    _promise.set_value(_function(std::forward<Params>(_params)...));
                 }
             }
             catch (...)
             {
-                _promise.set(std::current_exception());
+                _promise.set_exception(std::current_exception());
             }
         };
     }
 
-    std::function<void()> executor_;
+    std::move_only_function<void()> executor_;
 };
 
 class thread_pool {
@@ -213,7 +92,7 @@ public:
             tasks_.push_back(std::move(task));
         }
         cvar_queue_task_.notify_one();
-        return future;
+        return std::move(future);
     }
 
     void wait_for_all_done() {
@@ -305,9 +184,8 @@ int main(int argc, char* argv[]) {
     }
 
     auto future = pool.run([]{std::this_thread::sleep_for(2000ms); return 69;});
-    while(!future.ready())
+    while(future.wait_for(250ms) != std::future_status::ready)
     {
-        std::this_thread::sleep_for(50ms);
         std::cout << "Waiting for result...\n";
     }
 
