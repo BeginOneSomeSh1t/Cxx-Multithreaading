@@ -15,66 +15,9 @@ namespace vi = std::views;
 
 namespace tk {
     
-class task {
-public:
-    task() = default;
-    task(const task&) = delete;
-    task(task&& in_donor) noexcept : executor_{std::move(in_donor.executor_)} {}
-
-    task& operator=(const task&) = delete;
-    task& operator=(task&& rhs) noexcept {
-        executor_ = std::move(rhs.executor_);
-        return *this;
-    }
-
-    void operator()() {
-        executor_();
-    }
-
-    operator bool() const {
-        return static_cast<bool>(executor_);
-    }
-
-    template<typename FuncType, typename... Params>
-    static auto make(FuncType&& in_executor, Params&&... in_Params) {
-        std::promise<std::invoke_result_t<FuncType, Params...>> promise;
-        auto future = promise.get_future();
-        return std::make_pair(
-            task{std::forward<FuncType>(in_executor), std::move(promise), std::forward<Params>(in_Params)...},
-            std::move(future));
-    }
-
-private:
-    template<typename FuncType, typename PromType, typename ...Params>
-    task(FuncType&& _Executor, PromType&& _Promise, Params&&... _Params) {
-        executor_ = [
-            _function = std::forward<FuncType>(_Executor),
-            _promise = std::forward<PromType>(_Promise),
-            ..._params = std::forward<Params>(_Params) ]() mutable
-        {
-            try
-            {
-                if constexpr(std::is_void_v<std::invoke_result_t<FuncType, Params...>>)
-                {
-                    _function(std::forward<Params>(_params)...);
-                    _promise.set_value();
-                }
-                else
-                {
-                    _promise.set_value(_function(std::forward<Params>(_params)...));
-                }
-            }
-            catch (...)
-            {
-                _promise.set_exception(std::current_exception());
-            }
-        };
-    }
-
-    std::move_only_function<void()> executor_;
-};
-
 class thread_pool {
+
+    using task = std::move_only_function<void()>;
 public:
     thread_pool(std::size_t in_workers_count) {
         workers_.reserve(in_workers_count);
@@ -86,13 +29,25 @@ public:
     template<typename FuncType, typename... Params>
     auto run(FuncType&& function, Params&&... params)
     {
-        auto [task, future] = tk::task::make(std::forward<FuncType>(function), std::forward<Params>(params)...);
+        using ret_type = std::invoke_result_t<FuncType, Params...>;
+        auto pak = std::packaged_task<ret_type()>{std::bind(
+            std::forward<FuncType>(function), std::forward<Params>(params)...
+        )};
+        auto future = pak.get_future();
+        task t = {
+            [pak = std::move(pak)]() mutable
+            {
+                pak();
+            }
+        };
+        
         {
             std::lock_guard lock{task_queue_mutex_};
-            tasks_.push_back(std::move(task));
+            tasks_.push_back(std::move(t));
         }
+        
         cvar_queue_task_.notify_one();
-        return std::move(future);
+        return future;
     }
 
     void wait_for_all_done() {
